@@ -3,11 +3,13 @@
     For information about how to access the database via a session-variable, see: session_scope() 
 """
 import datetime
+import random
+import time
 from contextlib import contextmanager
 
-from sqlalchemy import Column, Integer, String, DateTime, create_engine, Float, Boolean, TEXT, Text
+from sqlalchemy import Column, Integer, String, DateTime, create_engine, Float, TEXT, ForeignKey, exc
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, relationship, scoped_session
 
 from flask_monitoringdashboard import config
 from flask_monitoringdashboard.core.group_by import get_group_by
@@ -15,109 +17,111 @@ from flask_monitoringdashboard.core.group_by import get_group_by
 Base = declarative_base()
 
 
-class MonitorRule(Base):
-    """ Table for storing which endpoints to monitor. """
-    __tablename__ = 'rules'
-    # endpoint must be unique and acts as a primary key
-    endpoint = Column(String(250), primary_key=True)
-    # boolean to determine whether the endpoint should be monitored?
-    monitor = Column(Boolean, default=False)
-    # the time and version on which the endpoint is added
-    time_added = Column(DateTime)
+class Endpoint(Base):
+    """ Table for storing information about the endpoints. """
+    __tablename__ = '{}Endpoint'.format(config.table_prefix)
+    id = Column(Integer, primary_key=True)
+    # name of the endpoint
+    name = Column(String(250), unique=True, nullable=False)
+    # 0 - disabled, 1 - performance, 2 - profiler, 3 - profiler + outliers
+    monitor_level = Column(Integer, default=config.monitor_level)
+    # the time when the endpoint was added
+    time_added = Column(DateTime, default=datetime.datetime.utcnow)
+    # the version when the endpoint was added
     version_added = Column(String(100), default=config.version)
-    # the timestamp of the last access time
-    last_accessed = Column(DateTime)
+    # the time the endpoint was last used
+    last_requested = Column(DateTime)
 
 
-class Tests(Base):
-    """ Table for storing which tests to run. """
-    __tablename__ = 'tests'
-    # name must be unique and acts as a primary key
-    name = Column(String(250), primary_key=True)
-    # boolean to determine whether the test should be run
-    run = Column(Boolean, default=True)
-    # the timestamp of the last time the test was run
-    lastRun = Column(DateTime)
-    # whether the test succeeded
-    succeeded = Column(Boolean)
-
-
-class TestRun(Base):
-    """ Table for storing test results. """
-    __tablename__ = 'testRun'
-    # name of executed test
-    name = Column(String(250), primary_key=True)
-    # execution_time in ms
-    execution_time = Column(Float, primary_key=True)
-    # time of adding the result to the database
-    time = Column(DateTime, primary_key=True)
-    # version of the website at the moment of adding the result to the database
-    version = Column(String(100), nullable=False)
-    # number of the test suite execution
-    suite = Column(Integer)
-    # number describing the i-th run of the test within the suite
-    run = Column(Integer)
-
-
-class FunctionCall(Base):
-    """ Table for storing measurements of function calls. """
-    __tablename__ = 'functionCalls'
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    endpoint = Column(String(250), nullable=False)
-    # execution_time in ms
-    execution_time = Column(Float, nullable=False)
-    # time of adding the result to the database
-    time = Column(DateTime, default=datetime.datetime.utcnow)
-    # version of the website at the moment of adding the result to the database
-    version = Column(String(100), nullable=False)
-    # which user is calling the function
+class Request(Base):
+    """ Table for storing measurements of requests. """
+    __tablename__ = '{}Request'.format(config.table_prefix)
+    id = Column(Integer, primary_key=True)
+    endpoint_id = Column(Integer, ForeignKey(Endpoint.id))
+    # the processing time of the request
+    duration = Column(Float, nullable=False)
+    # the time when the request was handled
+    time_requested = Column(DateTime, default=datetime.datetime.utcnow)
+    # the version when the request was handled
+    version_requested = Column(String(100), default=config.version)
+    # a criteria by which the requests can be grouped
     group_by = Column(String(100), default=get_group_by)
-    # ip address of remote user
-    ip = Column(String(25), nullable=False)
+    # the ip address of the requester
+    ip = Column(String(100), nullable=False)
+
+    endpoint = relationship(Endpoint)
+    stack_lines = relationship('StackLine', back_populates='request')
+    outlier = relationship('Outlier', uselist=False, back_populates='request')
 
 
 class Outlier(Base):
     """ Table for storing information about outliers. """
-    __tablename__ = 'outliers'
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    endpoint = Column(String(250), nullable=False)
-
-    # request-values, GET, POST, PUT
-    request_values = Column(TEXT)
-    # request headers
-    request_headers = Column(TEXT)
-    # request environment
+    __tablename__ = '{}Outlier'.format(config.table_prefix)
+    id = Column(Integer, primary_key=True)
+    request_id = Column(Integer, ForeignKey(Request.id))
+    # http headers of the request
+    request_header = Column(TEXT)
+    # http environment of the request
     request_environment = Column(TEXT)
-    # request url
-    request_url = Column(String(1000))
-
-    # cpu_percent in use
-    cpu_percent = Column(String(100))
-    # memory
+    # url of the request
+    request_url = Column(String(2100))
+    # cpu utilization of the server when handling the request
+    cpu_percent = Column(String(150))
+    # memory utilization of the server when handling the request
     memory = Column(TEXT)
-
-    # stacktrace
+    # the stacktrace of the request
     stacktrace = Column(TEXT)
 
-    # execution_time in ms
-    execution_time = Column(Float, nullable=False)
-    # time of adding the result to the database
-    time = Column(DateTime)
+    request = relationship(Request, back_populates='outlier')
 
 
-class TestsGrouped(Base):
-    """ Table for storing grouped tests on endpoints. """
-    __tablename__ = 'testsGrouped'
-    # Name of the endpoint
-    endpoint = Column(String(250), primary_key=True)
-    # Name of the unit test
-    test_name = Column(String(250), primary_key=True)
+class CodeLine(Base):
+    __tablename__ = '{}CodeLine'.format(config.table_prefix)
+    """ Table for storing the text of a StackLine. """
+    id = Column(Integer, primary_key=True)
+    # quadruple (filename, line_number, function_name, code) that uniquely identifies a statement in the code
+    filename = Column(String(250), nullable=False)
+    line_number = Column(Integer, nullable=False)
+    function_name = Column(String(250), nullable=False)
+    code = Column(String(250), nullable=False)
+
+
+class StackLine(Base):
+    """ Table for storing lines of execution paths of calls. """
+    __tablename__ = '{}StackLine'.format(config.table_prefix)
+    request_id = Column(Integer, ForeignKey(Request.id), primary_key=True)
+    code_id = Column(Integer, ForeignKey(CodeLine.id))
+    # position in the flattened stack tree
+    position = Column(Integer, primary_key=True)
+    # level in the tree
+    indent = Column(Integer, nullable=False)
+    # time spent on that line
+    duration = Column(Float, nullable=False)
+
+    request = relationship(Request, back_populates='stack_lines')
+    code = relationship(CodeLine)
+
+
+class CustomGraph(Base):
+    """ Table for storing custom graphs names. """
+    __tablename__ = '{}CustomGraph'.format(config.table_prefix)
+    graph_id = Column(Integer, primary_key=True)
+    title = Column(String(250), nullable=False, unique=True)
+    time_added = Column(DateTime, default=datetime.datetime.utcnow)
+    version_added = Column(String(100), default=config.version)
+
+
+class CustomGraphData(Base):
+    """ Table for storing data collected by custom graphs. """
+    __tablename__ = '{}CustomGraphData'.format(config.table_prefix)
+    id = Column(Integer, primary_key=True)
+    graph_id = Column(Integer, ForeignKey(CustomGraph.graph_id))
+    time = Column(DateTime, default=datetime.datetime.utcnow)
+    value = Column(Float)
 
 
 # define the database
 engine = create_engine(config.database_name)
-
-# creates all tables in the database
 Base.metadata.create_all(engine)
 Base.metadata.bind = engine
 DBSession = sessionmaker(bind=engine)
@@ -132,16 +136,36 @@ def session_scope():
             
     :return: the session for accessing the database
     """
-    session = DBSession()
+    session_obj = scoped_session(DBSession)
+    session = session_obj()
     try:
         yield session
         session.commit()
-    except Exception:
+    except exc.OperationalError:
         session.rollback()
-        raise
+        time.sleep(0.5 + random.random())
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print('No commit has been made, due to the following error: {}'.format(e))
     finally:
         session.close()
 
 
+def row2dict(row):
+    """
+    Converts a database-object to a python dict.
+    This function can be used to serialize an object into JSON, as this cannot be
+    directly done (but a dict can).
+    :param row: any object
+    :return: a python dict
+    """
+    d = {}
+    for column in row.__table__.columns:
+        d[column.name] = str(getattr(row, column.name))
+
+    return d
+
+
 def get_tables():
-    return [MonitorRule, Tests, TestRun, FunctionCall, Outlier, TestsGrouped]
+    return [Endpoint, Request, Outlier, StackLine, CodeLine, CustomGraph, CustomGraphData]

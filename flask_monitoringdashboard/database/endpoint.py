@@ -1,109 +1,169 @@
 """
-Contains all functions that access a single endpoint
+Contains all functions that access an Endpoint object
 """
 import datetime
+from collections import defaultdict
 
 from sqlalchemy import func, desc
 from sqlalchemy.orm.exc import NoResultFound
 
-from flask_monitoringdashboard import config
-from flask_monitoringdashboard.database import FunctionCall, MonitorRule
+from flask_monitoringdashboard.core.timezone import to_local_datetime
+from flask_monitoringdashboard.database import Request, Endpoint
 
 
-def get_num_requests(db_session, endpoint, start_date, end_date):
-    """ Returns a list with all dates on which an endpoint is accessed.
-        :param endpoint: if None, the result is the sum of all endpoints
-        :param start_date: datetime.date object
-        :param end_date: datetime.date object
+def get_num_requests(db_session, endpoint_id, start_date, end_date):
     """
-    query = db_session.query(func.strftime('%Y-%m-%d %H:00:00', FunctionCall.time).label('newTime'),
-                             func.count(FunctionCall.execution_time).label('count'))
-    if endpoint:
-        query = query.filter(FunctionCall.endpoint == endpoint)
-    result = query.filter(FunctionCall.time >= datetime.datetime.combine(start_date, datetime.time(0, 0, 0, 0))). \
-        filter(FunctionCall.time <= datetime.datetime.combine(end_date, datetime.time(23, 59, 59))). \
-        group_by('newTime').all()
+    Returns a list with all dates on which an endpoint is accessed.
+    :param db_session: session for the database
+    :param endpoint_id: if None, the result is the sum of all endpoints
+    :param start_date: datetime.date object
+    :param end_date: datetime.date object
+    :return list of dates
+    """
+    query = db_session.query(Request.time_requested)
+    if endpoint_id:
+        query = query.filter(Request.endpoint_id == endpoint_id)
+    result = query.filter(Request.time_requested >= start_date, Request.time_requested <= end_date).all()
+
+    return group_request_times([r[0] for r in result])
+
+
+def group_request_times(datetimes):
+    """
+    Returns a list of tuples containing the number of hits per hour
+    :param datetimes: list of datetime objects
+    :return list of tuples ('%Y-%m-%d %H:00:00', count)
+    """
+    hours_dict = defaultdict(int)
+    for dt in datetimes:
+        round_time = dt.strftime('%Y-%m-%d %H:00:00')
+        hours_dict[round_time] += 1
+    return hours_dict.items()
+
+
+def get_users(db_session, endpoint_id, limit=None):
+    """
+    Returns a list with the distinct group-by from a specific endpoint. The limit is used to filter the most used
+    distinct.
+    :param db_session: session for the database
+    :param endpoint_id: the id of the endpoint to filter on
+    :param limit: the max number of results
+    :return a list of tuples (group_by, hits)
+    """
+    query = db_session.query(Request.group_by, func.count(Request.group_by)). \
+        filter(Request.endpoint_id == endpoint_id).group_by(Request.group_by). \
+        order_by(desc(func.count(Request.group_by)))
+    if limit:
+        query = query.limit(limit)
+    result = query.all()
     db_session.expunge_all()
     return result
 
 
-def get_group_by_sorted(db_session, endpoint, limit=None):
+def get_ips(db_session, endpoint_id, limit=None):
     """
     Returns a list with the distinct group-by from a specific endpoint. The limit is used to filter the most used
-    distinct
-    :param endpoint: the endpoint to filter on
+    distinct.
+    :param db_session: session for the database
+    :param endpoint_id: the endpoint_id to filter on
     :param limit: the number of
-    :return: a list with the group_by as strings.
+    :return a list with the group_by as strings.
     """
-    query = db_session.query(FunctionCall.group_by, func.count(FunctionCall.group_by)). \
-        filter(FunctionCall.endpoint == endpoint).group_by(FunctionCall.group_by). \
-        order_by(desc(func.count(FunctionCall.group_by)))
+    query = db_session.query(Request.ip, func.count(Request.ip)). \
+        filter(Request.endpoint_id == endpoint_id).group_by(Request.ip). \
+        order_by(desc(func.count(Request.ip)))
     if limit:
         query = query.limit(limit)
     result = query.all()
     db_session.expunge_all()
-    return [r[0] for r in result]
+    return result
 
 
-def get_ip_sorted(db_session, endpoint, limit=None):
+def get_endpoint_by_name(db_session, endpoint_name):
     """
-    Returns a list with the distinct group-by from a specific endpoint. The limit is used to filter the most used
-    distinct
-    :param endpoint: the endpoint to filter on
-    :param limit: the number of
-    :return: a list with the group_by as strings.
+    Returns the Endpoint object from a given endpoint_name.
+    If the result doesn't exist in the database, a new row is added.
+    :param db_session: session for the database
+    :param endpoint_name: string with the endpoint name
+    :return Endpoint object
     """
-    query = db_session.query(FunctionCall.ip, func.count(FunctionCall.ip)). \
-        filter(FunctionCall.endpoint == endpoint).group_by(FunctionCall.ip). \
-        order_by(desc(func.count(FunctionCall.ip)))
-    if limit:
-        query = query.limit(limit)
-    result = query.all()
-    db_session.expunge_all()
-    return [r[0] for r in result]
-
-
-def get_monitor_rule(db_session, endpoint):
-    """ Get the MonitorRule from a given endpoint. If no value is found, a new value 
-    is added to the database and the function is called again (recursively). """
     try:
-        result = db_session.query(MonitorRule). \
-            filter(MonitorRule.endpoint == endpoint).one()
-        # for using the result when the session is closed, use expunge
-        db_session.expunge(result)
-        return result
+        result = db_session.query(Endpoint). \
+            filter(Endpoint.name == endpoint_name).one()
+        result.time_added = to_local_datetime(result.time_added)
+        result.last_requested = to_local_datetime(result.last_requested)
     except NoResultFound:
-        db_session.add(
-            MonitorRule(endpoint=endpoint, version_added=config.version, time_added=datetime.datetime.now()))
-
-    # return new added row
-    return get_monitor_rule(db_session, endpoint)
-
-
-def update_monitor_rule(db_session, endpoint, value):
-    """ Update the value of a specific monitor rule. """
-    db_session.query(MonitorRule).filter(MonitorRule.endpoint == endpoint). \
-        update({MonitorRule.monitor: value})
+        result = Endpoint(name=endpoint_name)
+        db_session.add(result)
+        db_session.flush()
+    db_session.expunge(result)
+    return result
 
 
-def get_all_measurement_per_column(db_session, endpoint, column, value):
-    """Return all entries with measurements from a given endpoint for which the column has a specific value.
-    Used for creating a box plot. """
-    result = db_session.query(FunctionCall).filter(FunctionCall.endpoint == endpoint, column == value).all()
+def get_endpoint_by_id(db_session, endpoint_id):
+    """
+    Returns the Endpoint object from a given endpoint id.
+    :param db_session: session for the database
+    :param endpoint_id: id of the endpoint.
+    :return Endpoint object
+    """
+    result = db_session.query(Endpoint).filter(Endpoint.id == endpoint_id).one()
+    db_session.expunge(result)
+    return result
+
+
+def update_endpoint(db_session, endpoint_name, value):
+    """
+    Updates the value of a specific Endpoint.
+    :param db_session: session for the database
+    :param endpoint_name: name of the endpoint
+    :param value: new monitor level
+    """
+    db_session.query(Endpoint).filter(Endpoint.name == endpoint_name). \
+        update({Endpoint.monitor_level: value})
+    db_session.flush()
+
+
+def get_last_requested(db_session):
+    """
+    Returns the accessed time of all endpoints.
+    :param db_session: session for the database
+    :return list of tuples with name of the endpoint and date it was last used
+    """
+    result = db_session.query(Endpoint.name, Endpoint.last_requested).all()
     db_session.expunge_all()
     return result
 
 
-def get_last_accessed_times(db_session, endpoint):
-    """ Returns a list of all endpoints and their last accessed time. """
-    result = db_session.query(MonitorRule.last_accessed).filter(MonitorRule.endpoint == endpoint).first()
-    db_session.expunge_all()
-    if result:
-        return result[0]
-    return None
+def update_last_accessed(db_session, endpoint_name):
+    """
+    Updates the timestamp of last access of the endpoint.
+    :param db_session: session for the database
+    :param endpoint_name: name of the endpoint
+    """
+    db_session.query(Endpoint).filter(Endpoint.name == endpoint_name). \
+        update({Endpoint.last_requested: datetime.datetime.utcnow()})
 
 
-def update_last_accessed(db_session, endpoint, value):
-    """ Updates the timestamp of last access of the endpoint. """
-    db_session.query(MonitorRule).filter(MonitorRule.endpoint == endpoint). \
-        update({MonitorRule.last_accessed: value})
+def get_endpoints(db_session):
+    """
+    Returns all Endpoint objects from the database.
+    :param db_session: session for the database
+    :return list of Endpoint objects, sorted on the number of requests (descending)
+    """
+    return db_session.query(Endpoint).\
+        outerjoin(Request).\
+        group_by(Endpoint.id).\
+        order_by(desc(func.count(Request.endpoint_id)))
+
+
+def get_endpoints_hits(db_session):
+    """
+    Returns all endpoint names and total hits from the database.
+    :param db_session: session for the database
+    :return list of (endpoint name, total hits) tuples
+    """
+    return db_session.query(Endpoint.name, func.count(Request.endpoint_id)). \
+        join(Request). \
+        group_by(Endpoint.name).\
+        order_by(desc(func.count(Request.endpoint_id))).all()

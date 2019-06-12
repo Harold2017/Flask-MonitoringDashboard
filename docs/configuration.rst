@@ -1,7 +1,7 @@
 Configuration
 =============
-Once you have successfully installed the Flask Monitoring Dashboard with information from 
-`this page <installation.html>`_, you can use the advanced features by correctly configuring the Dashboard.
+Once you have successfully installed the Flask-MonitoringDashboard using the instructions from 
+`the installation page <installation.html>`_, you can use the advanced features by correctly configuring the Dashboard.
 
 Using a configuration file
 --------------------------
@@ -13,7 +13,7 @@ In order to configure the Dashboard with a configuration-file, you can use the f
 
    dashboard.config.init_from(file='/<path to file>/config.cfg')
 
-Thus, it becomes:
+Your app then becomes:
 
 .. code-block:: python
 
@@ -33,8 +33,8 @@ Thus, it becomes:
    if __name__ == '__main__':
      app.run(debug=True)
 
-Instead of having a hard-coded string containing the location of the config file in the code above, it is also possible
-to define an environment variable that specifies the location of this config file.
+Instead of having a hard-coded string containing the location of the config file in the code above, 
+it is also possible to define an environment variable that specifies the location of this config file.
 The line should then be:
 
 .. code-block:: python
@@ -45,56 +45,98 @@ This will configure the Dashboard based on the file provided in the environment 
 
 The content of the configuration file
 -------------------------------------
-Once the setup is complete, a configuration file (e.g. 'config.cfg') should be set next to the python file that 
-contains the entry point of the app. The following things can be configured:
+Once the setup is complete, a `configuration file`_ (e.g. 'config.cfg') should be set next to the python 
+file that contains the entry point of the app. The following properties can be configured:
+
+.. _`configuration file`: https://github.com/flask-dashboard/Flask-MonitoringDashboard/tree/master/config.cfg
 
 .. code-block:: python
 
    [dashboard]
    APP_VERSION=1.0
+   GIT=/<path to your project>/.git/
    CUSTOM_LINK=dashboard
-   DATABASE=sqlite:////<path to your project>/dashboard.db
+   MONITOR_LEVEL=3
+   OUTLIER_DETECTION_CONSTANT=2.5
+   SAMPLING_PERIOD=20
+   ENABLE_LOGGING=True
+
+   [authentication]
    USERNAME=admin
    PASSWORD=admin
    GUEST_USERNAME=guest
    GUEST_PASSWORD=['dashboardguest!', 'second_pw!']
-   GIT=/<path to your project>/.git/
-   OUTLIER_DETECTION_CONSTANT=2.5
-   DASHBOARD_ENABLED = True
-   TEST_DIR=/<path to your project>/tests/
+   SECURITY_TOKEN=cc83733cb0af8b884ff6577086b87909
+
+   [database]
+   TABLE_PREFIX=fmd
+   DATABASE=sqlite:////<path to your project>/dashboard.db
+
+   [visualization]
+   TIMEZONE=Europe/Amsterdam
    COLORS={'main':'[0,97,255]',
            'static':'[255,153,0]'}
 
-This might look a bit overwhelming, but the following list explains everything in detail:
+
+As can be seen above, the configuration is split into 4 headers:
+
+Dashboard
+~~~~~~~~~
 
 - **APP_VERSION:** The version of the application that you use.
-  Updating the version helps in showing differences in execution times of a function over a period of time.
+  Updating the version allows seeing the changes in the execution time of requests over multiple versions.
+
+- **GIT:** Since updating the version in the configuration-file when updating code isn't very convenient,
+  another way is to provide the location of the git-folder. From the git-folder,
+  the version is automatically retrieved by reading the commit-id (hashed value).
+  The specified value is the location to the git-folder. This is relative to the configuration-file.
 
 - **CUSTOM_LINK:** The Dashboard can be visited at localhost:5000/{{CUSTOM_LINK}}.
 
-- **DATABASE:** Suppose you have multiple projects where you're working on and want to separate the results.
-  Then you can specify different database_names, such that the result of each project is stored in its own database.
+- **MONITOR_LEVEL**: The level for monitoring your endpoints. The default value is 3. For more information, see the
+  Overview page of the Dashboard.
 
-- **USERNAME** and **PASSWORD:** Must be used for logging into the Dashboard.
-  Thus both are required.
+- **OUTLIER_DETECTION_CONSTANT:** When the execution time is greater than :math:`constant * average`,
+  extra information is logged into the database. A default value for this variable is :math:`2.5`.
+
+- **SAMPLING_PERIOD:** Time between two profiler-samples. The time must be specified in ms.
+  If this value is not set, the profiler monitors continuously.
+
+- **ENABLE_LOGGING:** Boolean if you want additional logs to be printed to the console. Default
+  value is False.
+
+Authentication
+~~~~~~~~~~~~~~
+
+- **USERNAME** and **PASSWORD:** Must be used for logging into the Dashboard. Both are required.
 
 - **GUEST_USERNAME** and **GUEST_PASSWORD:** A guest can only see the results, but cannot configure/download any data.
 
-- **GIT:** Since updating the version in the configuration-file when updating code isn't very useful,
-  it is a better idea to provide the location of the git-folder.
-  From the git-folder,
-  The version is automatically retrieved by reading the commit-id (hashed value).
-  The location is relative to the configuration-file.
+- **SECURITY_TOKEN:** The token that is used for exporting the data to other services. If you leave this unchanged,
+  any service is able to retrieve the data from the database.
 
-- **OUTLIER_DETECTION_CONSTANT:** When the execution time is more than this :math:`constant * average`,
-  extra information is logged into the database.
-  A default value for this variable is :math:`2.5`.
+Database
+~~~~~~~~
 
-- **OUTLIERS_ENABLED:** Whether you want to collect information about outliers. If you set this to true,
-  the expected overhead of the Dashboard is a bit larger, as you can find
-  `here <https://github.com/flask-dashboard/Testing-Dashboard-Overhead>`_.
+- **TABLE_PREFIX:** A prefix to every table that the Flask-MonitoringDashboard uses, to ensure that there are no
+  conflicts with the other tables, that are specified by the user of the dashboard.
 
-- **TEST_DIR:** Specifies where the unit tests reside. This will show up in the configuration in the Dashboard.
+- **DATABASE:** Suppose you have multiple projects that you're working on and want to separate the results.
+  Then you can specify different database_names, such that the result of each project is stored in its own database.
+
+Visualization
+~~~~~~~~~~~~~
+
+- **TIMEZONE:** The timezone for converting a UTC timestamp to a local timestamp. For a list of all
+  timezones, use the following:
+
+  .. code-block:: python
+
+     import pytz  # pip install pytz
+     print(pytz.all_timezones)
+
+  The dashboard saves the time of every request by default in a UTC-timestamp. However, if you want to display
+  it in a local timestamp, you need this property.
 
 - **COLORS:** The endpoints are automatically hashed into a color.
   However, if you want to specify a different color for an endpoint, you can set this variable.
@@ -107,5 +149,6 @@ This might look a bit overwhelming, but the following list explains everything i
 
 What have you configured?
 -------------------------
-A lot of configuration options, but you might wonder what functionality is now supported in your Flask application?
-Have a look at `this file <functionality.html>`_ to find the answer.
+We've shown a bunch of configuration settings, but what features are now supported in your Flask
+application and how are they related to the config options?
+Have a look at `the detailed functionality page <functionality.html>`_ to find the answer.
